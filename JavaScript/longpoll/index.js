@@ -1,60 +1,107 @@
-const express = require('express');
+const fastify = require('fastify')({ logger: false });
 
-const app = express();
-app.use(express.json());
-
-app.use(express.urlencoded({ extended: true }));
-
-let status = true;
+fastify.register(require('@fastify/formbody'));
 
 class LongPoll {
-  constructor(port = 13921, routePath = 'longpoll') {
+  constructor(port = 13921, routePath = '/longpoll', tokens = {}) {
     this.port = port;
     this.routePath = routePath;
-    this.messages = [];
+    this.tokens = tokens;
+    this.usersList = tokens.map(({ nick, token }) => ({
+      nick,
+      token,
+      status: true,
+      clientLost: false,
+      messages: [],
+    }));
   }
 
-  initialize() {
-    app.get(this.routePath, (req, res) => {
-      if (this.messages.length > 0) {
-        res.send(this.messages);
-        this.messages = [];
+  initialize(callback) {
+    fastify.get(this.routePath, (req, reply) => {
+      const isLocalhost = req.ip === '127.0.0.1' || req.ip === '::1';
+      if (!isLocalhost) {
+        reply.code(403).send('Access denied');
+        return;
+      }
+      const token = req.query.token;
+      if (!token || !getUser(this.tokens, token)) {
+        console.log(req.query);
+        return reply.code(403).send('Invalid Token');
+      }
+
+      const userMessages = this.usersList.find(user => user.token === token);
+      if (userMessages && userMessages.messages.length > 0) {
+        reply.send(userMessages.messages);
+        userMessages.messages = [];
       } else {
-        res.send('failed');
+        reply.send('failed');
       }
     });
 
-    app.post(this.routePath, (req, res) => {
-      if (req.body.data.status) {
-        status = true;
-      } else if (req.body.data.message === 'connected') {
-        this.handlerConnect();
-      } else {
-        this.messageHandler(req.body.data);
+    fastify.post(this.routePath, (req, reply) => {
+      const isLocalhost = req.ip === '127.0.0.1' || req.ip === '::1';
+      if (!isLocalhost) {
+        reply.code(403).send('Access denied');
+        return;
       }
-      res.sendStatus(200);
+      const user = getUser(this.tokens, req.query.token) || false;
+      if (!user) {
+        return reply.code(403).send('Invalid Token');
+      }
+      if (!req.body.type) {
+        return reply.code(403).send('Invalid Type');
+      }
+
+      const currentUser = this.usersList.find(u => u.nick === user);
+      if (!currentUser) {
+        return reply.code(403).send('Invalid User');
+      }
+
+      if (req.body.type === 'checkstatus') {
+        currentUser.status = true;
+        currentUser.clientLost = false;
+      } else if (req.body.type === 'connect') {
+        this.handlerConnect(user);
+      } else {
+        this.messageHandler({ object: req.body.data, nick: user });
+      }
+      reply.code(200).send();
     });
 
-    setInterval(() => {
-      this.messages.push('checkstatus');
-      if (status === false) {
-        this.handlerLost();
-      }
-      status = false;
-    }, 5000);
+    const checkStatus = () => {
+      this.usersList.forEach(user => {
+        if (!user.messages.includes('checkstatus')) {
+          user.messages.push('checkstatus');
+        }
+        if (user.status === false && !user.clientLost) {
+          this.handlerLost(user.nick);
+          user.clientLost = true;
+        }
+        user.status = false;
+      });
+      setTimeout(checkStatus, 2000);
+    };
+    checkStatus();
 
-    app.listen(this.port, () => {});
+    fastify.listen({ port: this.port, host: '0.0.0.0' }, (err, address) => {
+      if (typeof callback === 'function') {
+        callback();
+      }
+      if (err) {
+        console.error(err);
+        process.exit(1);
+      }
+    });
   }
 
   onMessage(handler) {
     this.messageHandler = handler;
   }
 
-  sendLongPool(longpoolmessage) {
-    if (this.messages.length === 0) {
-      this.messages.push(longpoolmessage);
-    } else {
-      this.messages.push(longpoolmessage);
+  sendLongPoll(name, longpollmessage) {
+    const user = this.usersList.find(user => user.nick === name);
+    if (user) {
+      user.messages.push(longpollmessage);
     }
   }
 
@@ -65,6 +112,11 @@ class LongPoll {
   onConnectClient(handler) {
     this.handlerConnect = handler;
   }
+}
+
+function getUser(tokens, token) {
+  const user = tokens.find(user => user.token === token);
+  return user ? user.nick : false;
 }
 
 module.exports = LongPoll;
