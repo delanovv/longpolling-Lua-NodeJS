@@ -1,12 +1,22 @@
-require('addon')
-local cjson = require('cjson')
-local effil = require('effil')
-local encoding										= require('encoding')
-encoding.default									= 'CP1251'
-u8 = encoding.UTF8
+local effil = require('effil') 
+local encoding										= require('encoding'); encoding.default									= 'CP1251'; u8 = encoding.UTF8
 
 local M = {}
 local eventHandlers = {}
+
+local thread = function() end
+
+if type(encodeJson) == 'nil' then
+  require('addon')
+  local cjson = require('cjson')
+
+  function encodeJson(...) return cjson.encode(...) end
+  function decodeJson(...) return cjson.decode(...) end
+  function thread(...) return newTask(...) end
+else
+  function thread(...) return lua_thread.create(...) end
+end
+
 
 function asyncHttpRequest(method, url, args, resolve, reject)
     local request_thread = effil.thread(function (method, url, args)
@@ -23,7 +33,7 @@ function asyncHttpRequest(method, url, args, resolve, reject)
     if not resolve then resolve = function() end end
     if not reject then reject = function() end end
     -- Проверка выполнения потока
-    newTask(function()
+    thread(function()
         local runner = request_thread
         while true do
             local status, err = runner:status()
@@ -47,19 +57,21 @@ function asyncHttpRequest(method, url, args, resolve, reject)
     end)
 end
 
-function M.sendPool(url, message, callback)
-    asyncHttpRequest('POST', url, {
+function M.sendPoll(url, token, message, callback, reqType)
+    reqType = reqType or "message"
+    asyncHttpRequest('POST', url.."?token="..token, {
         headers = {
             ['Content-Type'] = 'application/json'
         },
-        data = u8(cjson.encode({
-            data = message
-        }))
+        data = u8(encodeJson({
+            data = message,
+            type = reqType
+        })),
     },
     function(response)
         if response.status_code == 200 then
         else
-            print("Catched Error in HTTP Request: "..response.status_code)
+            print("Catched Error in HTTP Request: "..response.text)
         end
         if type(callback) == "function" then
             callback(response)
@@ -71,33 +83,25 @@ function M.sendPool(url, message, callback)
 )
 end
 
-function M.startPool(url, port, duration)
-    if not url then
-        url = "http://127.0.0.1/"
-    end
-    if not port then
-        port = "13921"
-    end
-    if not duration then
-        duration = 100
-    end
-    M.sendPool(url..port, {message = "connected"})
-    newTask(function()
+function M.startPoll(url, token, duration)
+    url = url or 'http://127.0.0.1:13921/longpoll'
+    duration = duration or 100
+    M.sendPoll(url, token, {}, function() end, "connect")
+    thread(function()
         while true do
             wait(duration)
-            asyncHttpRequest('GET', url..port, {},
+            asyncHttpRequest('GET', url.."?token="..token, {},
             function(response)
                 if response.status_code == 200 then
                     local result = response.text
                     if result ~= "failed" then
                         eventHandlers[#eventHandlers + 1] = result
-                        local arrayRequests = cjson.decode(result)
-
+                        local arrayRequests = decodeJson(result)
                         for _, request in ipairs(arrayRequests) do
                             if request == "checkstatus" then
-                                M.sendPool(url..port, {status = "ok"})
+                                M.sendPoll(url, token, {}, function() end, "checkstatus")
                             else
-                                M.onPool(u8:decode(request))
+                                M.onPoll(request)
                             end
                         end
                     end
@@ -114,7 +118,7 @@ function M.startPool(url, port, duration)
     end)
 end
 
-function M.onPool(callback)
+function M.onPoll(callback)
     for _, handler in ipairs(eventHandlers) do
         callback(handler)
     end
