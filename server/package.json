@@ -1,0 +1,22 @@
+{
+    "name": "fastify-longpoll",
+    "version": "1.0.0",
+    "description": "Simple long-polling server built on Fastify",
+    "main": "src/LongPoll.js",
+    "files": [
+        "src/"
+    ],
+    "keywords": [
+        "longpoll",
+        "long-polling",
+        "fastify"
+    ],
+    "license": "MIT",
+    "engines": {
+        "node": ">=16"
+    },
+    "dependencies": {
+        "@fastify/formbody": "^7.0.0",
+        "fastify": "^4.0.0"
+    }
+}
